@@ -1,0 +1,33 @@
+{
+  "id": "local-task-monitor",
+  "name": "本机任务监控",
+  "version": "0.3.1",
+  "minAppVersion": "1.1.1",
+  "tier": "js",
+  "author": "BobbyBian97",
+  "repo": "BobbyBian97/ccgui-plugin-local-task-monitor",
+  "license": "MIT",
+  "description": "在右侧面板监控由 CC GUI 启动的本地进程与任务：进程树、所属项目/工作区、PID、监听端口、CPU、内存与运行时长，只读；刷新间隔、项目归属、内部进程均可在面板或设置页配置。",
+  "sdkVersion": ">=0.3.16",
+  "permissions": [
+    "ui:panel-tab",
+    "ui:settings-section",
+    "exec:powershell",
+    "host:workspace",
+    "storage"
+  ],
+  "icon": "docs/icon.png",
+  "screenshots": [
+    "docs/screenshot-1-panel.png",
+    "docs/screenshot-2-settings.png"
+  ],
+  "keywords": [
+    "process",
+    "port",
+    "task",
+    "workspace",
+    "进程",
+    "端口",
+    "任务监控"
+  ]
+}
