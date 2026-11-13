@@ -17,6 +17,7 @@ const banned = [
   [/\blocalStorage\b/, "localStorage"],
   [/import\s*\(/, "dynamic import("],
   [/^\s*import\s/m, "bare import"],
+  [/Invoke-Expression/i, "Invoke-Expression"],
 ];
 for (const [re, name] of banned) {
   if (re.test(code)) throw new Error("bundle contains banned pattern: " + name);
