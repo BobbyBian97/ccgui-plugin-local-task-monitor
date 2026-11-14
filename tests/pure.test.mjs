@@ -7,6 +7,7 @@ import {
   buildWorkspaceIndex,
   matchProject,
   matchWorkspaceInText,
+  matchesProjectPath,
   attributeExternalServices,
   sortExternalServices,
   parseSnapshot,
@@ -55,6 +56,17 @@ test("命令行/路径匹配有边界且最长优先", () => {
   assert.equal(matchWorkspaceInText("D:\\workspace\\AI-Email2\\tools\\x.py", buildWorkspaceIndex([{ path: "D:\\workspace\\AI-Email" }])), null);
   assert.equal(matchWorkspaceInText("D:\\workspace\\x.py", buildWorkspaceIndex([{ path: "D:\\" }])).path, "D:\\");
   assert.equal(matchWorkspaceInText("C:\\Windows\\System32\\svchost.exe", index), null);
+});
+
+test("matchesProjectPath 空目标不过滤，路径大小写不敏感，未归属不匹配", () => {
+  const project = { name: "AI-Email", path: "D:\\workspace\\AI-Email", branch: "" };
+  assert.equal(matchesProjectPath(project, ""), true);
+  assert.equal(matchesProjectPath(null, ""), true);
+  assert.equal(matchesProjectPath(project, "D:\\workspace\\AI-Email"), true);
+  assert.equal(matchesProjectPath(project, "d:\\WORKSPACE\\ai-email"), true);
+  assert.equal(matchesProjectPath(project, "D:\\workspace\\AI-Email2"), false);
+  assert.equal(matchesProjectPath(null, "D:\\workspace\\AI-Email"), false);
+  assert.equal(matchesProjectPath({ name: "x" }, "D:\\workspace\\AI-Email"), false);
 });
 
 test("外部服务归属优先级 cwd > path > cmd，未归属与系统进程丢弃", () => {

@@ -4,6 +4,8 @@
 // 主进程为根扫描子孙进程，「可维护服务」发现可归属到侧栏工作区、监听 TCP 端口的
 // 非 ccgui 服务（如计划任务启动的 pythonw）。任务 tab 只读；服务 tab 可二次确认后
 // 强制停止 / 重启；两个 tab 共享同一份轮询状态。
+// 每个 tab 各有独立的项目筛选（工具栏内），默认只显示宿主当前工作区（面板的
+// workspacePath），可切「全部项目」或指定项目；切换 tab 不改变另一个 tab 的选择。
 // 数据源为本机 powershell.exe：
 //   Get-CimInstance Win32_Process（进程树与命令行）+ netstat -ano（监听端口）
 //   + PEB 读取进程工作目录（cwd），再用 ctx.workspaces.list() 做最长前缀匹配。
@@ -489,6 +491,44 @@ function projectLabel(project) {
   return project.branch ? project.name + "（" + project.branch + "）" : project.name;
 }
 
+// 面板项目筛选：targetPath 为空 = 不过滤；否则按归属路径精确匹配（大小写不敏感）。
+export function matchesProjectPath(project, targetPath) {
+  if (!targetPath) return true;
+  if (!project || typeof project.path !== "string" || !project.path) return false;
+  return project.path.toLowerCase() === String(targetPath).toLowerCase();
+}
+
+function basenameOfPath(path) {
+  const parts = String(path || "").split("\\").filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : String(path || "");
+}
+
+function lookupWorkspaceProject(index, path) {
+  if (!path) return null;
+  const key = path.toLowerCase();
+  const row = Array.isArray(index) ? index.find((item) => item.key === key) : null;
+  return row || { key, path, name: basenameOfPath(path), branch: "" };
+}
+
+function collectProjectOptions(snapshot, currentProject) {
+  const byKey = new Map();
+  const add = (project) => {
+    if (!project || !project.path) return;
+    const key = String(project.key || project.path).toLowerCase();
+    if (!byKey.has(key)) byKey.set(key, project);
+  };
+  if (snapshot) {
+    for (const proc of snapshot.procs || []) add(proc.project);
+    for (const proc of snapshot.external || []) add(proc.project);
+  }
+  add(currentProject);
+  return Array.from(byKey.values()).sort(
+    (a, b) =>
+      String(a.name).localeCompare(String(b.name), "zh-CN") ||
+      String(a.path).localeCompare(String(b.path), "zh-CN")
+  );
+}
+
 // cwd 不在任何工作区（如 adb、系统工具）时，沿父进程链继承最近的项目归属；
 // 继承来的归属在 UI 上用虚线徽标区分，避免与 cwd 直接命中混淆。
 function applyProjectInheritance(procs) {
@@ -861,6 +901,18 @@ const S = {
     color: TEXT_PRIMARY,
     cursor: "pointer",
     marginBottom: -1,
+  },
+  projectSelect: {
+    flex: "0 1 auto",
+    minWidth: 0,
+    maxWidth: 190,
+    font: "inherit",
+    padding: "3px 6px",
+    borderRadius: 6,
+    border: BORDER,
+    background: "var(--color-background-secondary-default)",
+    color: TEXT_PRIMARY,
+    cursor: "pointer",
   },
   panelBody: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" },
   panelPane: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" },
@@ -1250,6 +1302,7 @@ export default function activate(ctx) {
     const state = {
       snapshot: null,
       cpuById: {},
+      workspaceIndex: null,
       error: "",
       busy: false,
       paused: false,
@@ -1343,6 +1396,7 @@ export default function activate(ctx) {
         patch({
           snapshot: next,
           cpuById: cpu,
+          workspaceIndex: workspaceIndex || null,
           error: "",
           projectUnavailable: projectEnabled && workspaceRows === null,
           confirming:
@@ -1579,7 +1633,54 @@ export default function activate(ctx) {
     { key: "services", label: "可维护服务" },
   ];
 
-  function MonitorPanel() {
+  // 每个 tab 独立维护项目筛选：默认「当前项目」（跟随宿主 workspacePath），
+  // 可切「全部项目」或指定项目；返回值带一个可直接放进工具栏的 select 控件。
+  function useProjectFilter(state, workspacePath) {
+    const [value, setValue] = useState("__current__");
+    const currentPath = normalizeCwd(workspacePath || "");
+    const currentProject = useMemo(
+      () => lookupWorkspaceProject(state.workspaceIndex, currentPath),
+      [state.workspaceIndex, currentPath]
+    );
+    const options = useMemo(
+      () => collectProjectOptions(state.snapshot, currentProject),
+      [state.snapshot, currentProject]
+    );
+    const disabled = !state.projectEnabled || state.projectUnavailable;
+    const selectedKey = value === "__current__" || value === "__all__" ? "" : value.toLowerCase();
+    const selectedKnown = !selectedKey || options.some((item) => item.path.toLowerCase() === selectedKey);
+    const selectOptions = selectedKnown
+      ? options
+      : options.concat([{ key: selectedKey, path: value, name: basenameOfPath(value), branch: "" }]);
+    const path = disabled ? "" : value === "__all__" ? "" : value === "__current__" ? currentPath : normalizeCwd(value);
+    const title = disabled
+      ? state.projectUnavailable
+        ? "侧栏工作区列表不可用，无法按项目筛选"
+        : "项目归属已关闭，无法按项目筛选"
+      : "按项目筛选当前页签；默认只显示当前项目";
+    const select = h(
+      "select",
+      {
+        style: S.projectSelect,
+        value,
+        disabled,
+        title,
+        onChange: (event) => setValue(event.target.value),
+      },
+      h(
+        "option",
+        { value: "__current__" },
+        currentProject ? "当前项目：" + projectLabel(currentProject) : "当前项目（未选择工作区）"
+      ),
+      h("option", { value: "__all__" }, "全部项目"),
+      selectOptions
+        .filter((item) => item.path.toLowerCase() !== currentPath.toLowerCase())
+        .map((item) => h("option", { key: item.path, value: item.path }, projectLabel(item)))
+    );
+    return { path, select };
+  }
+
+  function MonitorPanel({ workspacePath }) {
     const [tab, setTab] = useState("tasks");
     return h(
       "div",
@@ -1605,8 +1706,8 @@ export default function activate(ctx) {
       h(
         "div",
         { style: S.panelBody },
-        h("div", { style: tab === "tasks" ? S.panelPane : S.panelPaneHidden }, h(TaskPanel)),
-        h("div", { style: tab === "services" ? S.panelPane : S.panelPaneHidden }, h(ServicesPanel))
+        h("div", { style: tab === "tasks" ? S.panelPane : S.panelPaneHidden }, h(TaskPanel, { workspacePath })),
+        h("div", { style: tab === "services" ? S.panelPane : S.panelPaneHidden }, h(ServicesPanel, { workspacePath }))
       )
     );
   }
@@ -1627,8 +1728,10 @@ export default function activate(ctx) {
       h("div", { style: S.detailValue }, value)
     );
 
-  function TaskPanel() {
+  function TaskPanel({ workspacePath }) {
     const state = useMonitorState();
+    const projectFilter = useProjectFilter(state, workspacePath);
+    const projectPath = projectFilter.path;
     const {
       snapshot,
       cpuById,
@@ -1644,7 +1747,14 @@ export default function activate(ctx) {
     const [query, setQuery] = useState("");
     const [expandedPid, setExpandedPid] = useState(null);
 
-    const ordered = useMemo(() => orderProcesses(snapshot ? snapshot.procs : [], showInternal), [snapshot, showInternal]);
+    const ordered = useMemo(
+      () =>
+        orderProcesses(
+          snapshot ? snapshot.procs.filter((proc) => matchesProjectPath(proc.project, projectPath)) : [],
+          showInternal
+        ),
+      [snapshot, showInternal, projectPath]
+    );
 
     const rows = useMemo(() => {
       const q = query.trim().toLowerCase();
@@ -1656,7 +1766,11 @@ export default function activate(ctx) {
     }, [ordered, onlyPorts, query]);
 
     const summary = useMemo(() => {
-      const visible = snapshot ? snapshot.procs.filter((proc) => showInternal || !isInternalProcess(proc)) : [];
+      const visible = snapshot
+        ? snapshot.procs.filter(
+            (proc) => (showInternal || !isInternalProcess(proc)) && matchesProjectPath(proc.project, projectPath)
+          )
+        : [];
       let portCount = 0;
       let memory = 0;
       let cpu = 0;
@@ -1666,7 +1780,7 @@ export default function activate(ctx) {
         portCount += uniquePortNumbers(proc.ports).length;
       }
       return { count: visible.length, ports: portCount, memory, cpu: Math.min(100, cpu) };
-    }, [snapshot, showInternal, cpuById]);
+    }, [snapshot, showInternal, projectPath, cpuById]);
 
     const roots = snapshot ? snapshot.roots : [];
     const hasCpu = Object.keys(cpuById).length > 0;
@@ -1806,16 +1920,23 @@ export default function activate(ctx) {
       );
     } else if (snapshot && rows.length === 0) {
       const filtered = query.trim() || onlyPorts;
+      const projectFiltered = Boolean(projectPath);
       emptyView = h(
         "div",
         { style: S.empty },
-        h("div", { style: S.emptyTitle }, filtered ? "没有匹配的任务" : "暂无本地任务"),
+        h(
+          "div",
+          { style: S.emptyTitle },
+          filtered ? "没有匹配的任务" : projectFiltered ? "当前项目下没有任务" : "暂无本地任务"
+        ),
         h(
           "div",
           null,
           filtered
             ? "试试清空搜索或关闭「仅服务」过滤。"
-            : "CC GUI 启动 CLI 会话、脚本或服务后，进程会出现在这里。"
+            : projectFiltered
+              ? "可在工具栏的项目筛选切换到「全部项目」查看其它项目的任务。"
+              : "CC GUI 启动 CLI 会话、脚本或服务后，进程会出现在这里。"
         )
       );
     }
@@ -1883,6 +2004,7 @@ export default function activate(ctx) {
           onChange: (event) => setQuery(event.target.value),
           spellCheck: false,
         }),
+        projectFilter.select,
         h(
           "select",
           { style: S.select, value: String(intervalMs), onChange: changeInterval, title: "自动刷新间隔（手动 = 只在点击刷新时采集）" },
@@ -1926,8 +2048,10 @@ export default function activate(ctx) {
     );
   }
 
-  function ServicesPanel() {
+  function ServicesPanel({ workspacePath }) {
     const state = useMonitorState();
+    const projectFilter = useProjectFilter(state, workspacePath);
+    const projectPath = projectFilter.path;
     const {
       snapshot,
       cpuById,
@@ -1946,8 +2070,11 @@ export default function activate(ctx) {
     const [expandedPid, setExpandedPid] = useState(null);
 
     const allServices = useMemo(
-      () => (snapshot && Array.isArray(snapshot.external) ? snapshot.external : []),
-      [snapshot]
+      () =>
+        (snapshot && Array.isArray(snapshot.external) ? snapshot.external : []).filter((proc) =>
+          matchesProjectPath(proc.project, projectPath)
+        ),
+      [snapshot, projectPath]
     );
 
     const services = useMemo(() => {
@@ -2159,7 +2286,11 @@ export default function activate(ctx) {
       content = h(
         "div",
         { style: S.sectionHint },
-        query.trim() ? "没有匹配的服务。" : "未发现可归属到侧栏工作区、正在监听 TCP 端口的非 CC GUI 服务。"
+        query.trim()
+          ? "没有匹配的服务。"
+          : projectPath
+            ? "当前项目下没有可维护服务；可在工具栏的项目筛选切换到「全部项目」。"
+            : "未发现可归属到侧栏工作区、正在监听 TCP 端口的非 CC GUI 服务。"
       );
     }
 
@@ -2226,6 +2357,7 @@ export default function activate(ctx) {
           onChange: (event) => setQuery(event.target.value),
           spellCheck: false,
         }),
+        projectFilter.select,
         h(
           "select",
           {
